@@ -19,14 +19,14 @@
 #include <limits>
 
 
-int     EPOCHS = 1000;
-int     POPULATION_SIZE = 1000000;
-float   ELITE_RATIO = 0.6f;
-float   MUTATION_PROBABILITY = 0.5f;
-char DATASET_FILEPATH[] = "C:\\Users\\ben\\Documents\\datasets\\berlin52.txt";
-int LOG_EVERY = 100;
+int     EPOCHS = 100000;
+int     POPULATION_SIZE = 750000;
+float   ELITE_RATIO = 0.5f;
+float   MUTATION_PROBABILITY = 0.85f;
+char DATASET_FILEPATH[] = "C:\\Users\\ben\\Documents\\datasets\\a280_formatted.txt"; // "C:\\Users\\ben\\Documents\\datasets\\berlin52.txt";
+int LOG_EVERY = 10;
 
-float IDEAL_DISTANCE = 7544.3659f;
+float IDEAL_DISTANCE = 2579; // 7544.3659f;
 
 
 struct City {
@@ -210,12 +210,16 @@ __global__ void runEvolutionStep(int size, int populationSize, int nonElitePopul
     
     int doMutation = rand_int(&local, 0, 100);
     if (doMutation <= int(mutationProbability * 100.0f)) {
-        int startId = replaceableItemStartIdx * size;
-        int gene1 = startId + rand_int(&local, 0, size - 1);
-        int gene2 = startId + rand_int(&local, 0, size - 1);
-        int tmp = d_populations[gene1];
-        d_populations[gene1] = d_populations[gene2];
-        d_populations[gene2] = tmp;
+        int numberOfMutations = rand_int(&local, 1, 10);
+
+        for (int m = 0; m < numberOfMutations; m++) {
+            int startId = replaceableItemStartIdx * size;
+            int gene1 = startId + rand_int(&local, 0, size - 1);
+            int gene2 = startId + rand_int(&local, 0, size - 1);
+            int tmp = d_populations[gene1];
+            d_populations[gene1] = d_populations[gene2];
+            d_populations[gene2] = tmp;
+        }
     }
 
     states[threadId] = local;
@@ -307,6 +311,10 @@ __host__ void executeEpochs(int blocks, int threadsPerBlock, int size, int popul
         if (e % LOG_EVERY == 0) {
             std::cout << "EPOCH: " << e << "\t";
             std::cout << "Best fitness score: " << localFitnessScores[0] << " | distance from optimal: " << localFitnessScores[0] - IDEAL_DISTANCE << "\n";
+            if (std::abs(localFitnessScores[0] - IDEAL_DISTANCE) < 1.0f) {
+                std::cout << "IDEAL SOLUTION FOUND, EXITING MAIN LOOP...\n";
+                break;
+            }
         }
         
         cudaMemcpy(d_populations, populations, sizeof(int) * size * populationSize, cudaMemcpyHostToDevice);
@@ -324,7 +332,7 @@ __host__ void executeEpochs(int blocks, int threadsPerBlock, int size, int popul
         */
     }
 
-    std::cout << "\nOverall best fitness score: " << localFitnessScores[0] << " | distance from optimal: " << localFitnessScores[0] - 7544.3659f << "\n";
+    std::cout << "\nOverall best fitness score: " << localFitnessScores[0] << " | distance from optimal: " << localFitnessScores[0] - IDEAL_DISTANCE << "\n";
 
     cudaFree(d_states);
 }
@@ -425,7 +433,11 @@ bool hasDuplicate(int arr[], int n) {
     return false;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc == 0) {
+
+    }
+
     // step 1, basics like reading the dataset, parsing the datapoints, etc.
     std::vector<City> cities;
     readInitDataFromFile(cities);
@@ -500,12 +512,12 @@ int main(void) {
 
     cudaMemcpy(populations, d_populations, cities.size() * sizeof(int) * POPULATION_SIZE, cudaMemcpyDeviceToHost);
 
-    int checkArr[52];
+    std::vector<int> checkArr;
     for (int i = 0; i < cities.size(); i++) {
         std::cout << populations[i] << " ";
-        checkArr[i] = populations[i];
+        checkArr.push_back(populations[i]);
     }
-    auto duplicateTest = hasDuplicate(checkArr, cities.size());
+    auto duplicateTest = hasDuplicate(checkArr.data(), cities.size());
     std::cout << "\nDuplicate found (bool): " << duplicateTest << "\n";
 
     free(idList);
