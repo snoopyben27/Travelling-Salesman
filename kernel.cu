@@ -20,10 +20,13 @@
 
 
 int     EPOCHS = 1000;
-int     POPULATION_SIZE = 300000;
-float   ELITE_RATIO = 0.5f;
+int     POPULATION_SIZE = 1000000;
+float   ELITE_RATIO = 0.6f;
 float   MUTATION_PROBABILITY = 0.5f;
 char DATASET_FILEPATH[] = "C:\\Users\\ben\\Documents\\datasets\\berlin52.txt";
+int LOG_EVERY = 100;
+
+float IDEAL_DISTANCE = 7544.3659f;
 
 
 struct City {
@@ -95,6 +98,29 @@ __device__ int generate_random_int(int min, int max) {
     return min + (r % range);
 }
 
+/*
+__global__ void shakeUpWithRandomMutations(int size, int populationSize, int* d_populations, curandState* states) {
+    int threadId = blockIdx.x * blockDim.x + threadIdx.x;
+    if (threadId >= populationSize) return;
+
+    curandState local = states[threadId];
+
+    int skip = rand_int(&local, 0, 10);
+    if (skip < 5) return;
+
+    int numberOfMutationToApply = rand_int(&local, 0, 10);
+    for (int i = 0; i < numberOfMutationToApply; i++) {
+        int startId = threadId * size;
+        int gene1 = startId + rand_int(&local, 0, size - 1);
+        int gene2 = startId + rand_int(&local, 0, size - 1);
+        int tmp = d_populations[gene1];
+        d_populations[gene1] = d_populations[gene2];
+        d_populations[gene2] = tmp;
+    }
+
+    states[threadId] = local;
+}
+*/
 
 __global__ void runEvolutionStep(int size, int populationSize, int nonElitePopulationSize, int* d_populations, float mutationProbability, curandState* states) {
     int threadId = blockIdx.x * blockDim.x + threadIdx.x;
@@ -106,35 +132,80 @@ __global__ void runEvolutionStep(int size, int populationSize, int nonElitePopul
     if (replaceableItemStartIdx >= populationSize) return;
     //if (threadId >= populationSize * size)  return;
 
-    // corssover 1-point
-    
-    int parentId1 = rand_int(&local, 0, (populationSize - nonElitePopulationSize)-1);
-    int parentId2 = rand_int(&local, 0, (populationSize - nonElitePopulationSize)-1);
-    int onePoint = rand_int(&local, 1, size - 2);
-    
-    for (int i = 0; i < onePoint; i++) {
-        d_populations[replaceableItemStartIdx * size + i] = d_populations[parentId1 * size + i];
-    }
+    int crossoverType = rand_int(&local, 0, 1);
+    if (crossoverType < 1) {
+        // corssover 1-point
 
-    int tmpId = replaceableItemStartIdx * size + onePoint;
-    bool found = false;
+        int parentId1 = rand_int(&local, 0, (populationSize - nonElitePopulationSize) - 1);
+        int parentId2 = rand_int(&local, 0, (populationSize - nonElitePopulationSize) - 1);
+        int onePoint = rand_int(&local, 1, size - 2);
 
-    for (int i = 0; i < size; i++) {
-        for (int j = 0; j < onePoint; j++) {
-            if (d_populations[parentId2 * size + i] == d_populations[replaceableItemStartIdx * size + j]) {
-                found = true;
-                break;
+        for (int i = 0; i < onePoint; i++) {
+            d_populations[replaceableItemStartIdx * size + i] = d_populations[parentId1 * size + i];
+        }
+
+        int tmpId = replaceableItemStartIdx * size + onePoint;
+        bool found = false;
+
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < onePoint; j++) {
+                if (d_populations[parentId2 * size + i] == d_populations[replaceableItemStartIdx * size + j]) {
+                    found = true;
+                    break;
+                }
+
             }
-            
+            if (!found) {
+                d_populations[tmpId] = d_populations[parentId2 * size + i];
+                tmpId++;
+            }
+            found = false;
         }
-        if (!found) {
-            d_populations[tmpId] = d_populations[parentId2 * size + i];
-            tmpId++;
-        }
-        found = false;
     }
-    
-    
+    else {
+        // crossover 2-point
+
+        int parentId1 = rand_int(&local, 0, (populationSize - nonElitePopulationSize) - 1);
+        int parentId2 = rand_int(&local, 0, (populationSize - nonElitePopulationSize) - 1);
+        int onePoint = rand_int(&local, 0, size - 2);
+        int twoPoint = rand_int(&local, onePoint + 1, size - 1);
+
+        for (int i = 0; i < onePoint; i++) {
+            d_populations[replaceableItemStartIdx * size + i] = d_populations[parentId1 * size + i];
+        }
+
+        for (int i = twoPoint; i < size; i++) {
+            d_populations[replaceableItemStartIdx * size + i] = d_populations[parentId1 * size + i];
+        }
+
+        int tmpId = replaceableItemStartIdx * size + onePoint;
+        bool found = false;
+
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < onePoint; j++) {
+                if (d_populations[parentId2 * size + i] == d_populations[replaceableItemStartIdx * size + j]) {
+                    found = true;
+                    break;
+                }
+
+            }
+
+            for (int j = twoPoint; j < size; j++) {
+                if (d_populations[parentId2 * size + i] == d_populations[replaceableItemStartIdx * size + j]) {
+                    found = true;
+                    break;
+                }
+
+            }
+
+            if (!found) {
+                d_populations[tmpId] = d_populations[parentId2 * size + i];
+                tmpId++;
+            }
+            found = false;
+        }
+    }
+
     // mutation
     
     int doMutation = rand_int(&local, 0, 100);
@@ -146,7 +217,6 @@ __global__ void runEvolutionStep(int size, int populationSize, int nonElitePopul
         d_populations[gene1] = d_populations[gene2];
         d_populations[gene2] = tmp;
     }
-    
 
     states[threadId] = local;
 }
@@ -219,12 +289,10 @@ __host__ void executeEpochs(int blocks, int threadsPerBlock, int size, int popul
     int testBlocks = (populationSize + TPB - 1) / TPB;
     int testBlocksE = (nonElitePopulationSize + TPB - 1) / TPB;
 
-    
+    bool shakeUpDone = false;
 
     // main optimization loop
     for (int e = 0; e < EPOCHS; e++) {
-        std::cout << "EPOCH: " << e + 1 << "\n";
-
         // we need to reorder the list to have it in increasing fitness score based
         calculatePopulationsFitness<<<testBlocks, TPB>>>(size, populationSize, d_populations, d_fitnessScores, d_xCoordList, d_yCoordList);
         err = cudaDeviceSynchronize();
@@ -236,14 +304,27 @@ __host__ void executeEpochs(int blocks, int threadsPerBlock, int size, int popul
         
         // reorder population to fitness ascending order
         reorderPopulations(size, populationSize, populations, localFitnessScores);
-        std::cout << "Best fitness score: " << localFitnessScores[0] << " | distance from optimal: " << localFitnessScores[0] - 7544.3659f << "\n";
+        if (e % LOG_EVERY == 0) {
+            std::cout << "EPOCH: " << e << "\t";
+            std::cout << "Best fitness score: " << localFitnessScores[0] << " | distance from optimal: " << localFitnessScores[0] - IDEAL_DISTANCE << "\n";
+        }
+        
         cudaMemcpy(d_populations, populations, sizeof(int) * size * populationSize, cudaMemcpyHostToDevice);
 
         // this generates the new populations by replacing the non elite ones
         runEvolutionStep<<<testBlocksE, TPB>>>(size, populationSize, nonElitePopulationSize, d_populations, MUTATION_PROBABILITY, d_states);
         err = cudaDeviceSynchronize();
         if (err != cudaSuccess) { printf("Evolution step kernel runtime error: %s\n", cudaGetErrorString(err)); }
+
+        /*
+        if (!shakeUpDone && e > (int)(EPOCHS / 2)) {
+            shakeUpDone = true;
+            shakeUpWithRandomMutations <<<testBlocks, TPB >>> (size, populationSize, d_populations, d_states);
+        }
+        */
     }
+
+    std::cout << "\nOverall best fitness score: " << localFitnessScores[0] << " | distance from optimal: " << localFitnessScores[0] - 7544.3659f << "\n";
 
     cudaFree(d_states);
 }
